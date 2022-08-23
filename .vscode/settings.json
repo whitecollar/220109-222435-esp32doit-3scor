@@ -1,0 +1,8 @@
+{
+    "jira-plugin.workingProject": "",
+    "files.associations": {
+        "temp": "cpp",
+        "*.tpp": "cpp",
+        "typeinfo": "cpp"
+    }
+}

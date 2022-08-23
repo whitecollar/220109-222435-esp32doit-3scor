@@ -1,0 +1,619 @@
+#include <Preferences.h>
+#include <ArduinoJson.h>
+#include "WiFi.h" 
+#include <Wire.h>
+#include <LiquidCrystal_PCF8574.h>
+#include <HTTPClient.h>
+#include <Keypad.h>
+#include "SIM800L.h"
+#include "soc/timer_group_struct.h"
+#include "soc/timer_group_reg.h"
+
+#define TINY_GSM_MODEM_SIM800
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
+#define ROW_NUM     6
+#define COLUMN_NUM  6
+
+#define SIM800_RST_PIN 18
+#define DEFAULT_TIMEOUT 50000
+/*
+char keys[ROW_NUM][COLUMN_NUM] = {
+  {'P','s','E','A','0'},
+  {'9','6','3','6','C'},
+  {'2','D','p','5','w'},
+  {'8', '5', 'f', '4','B'},
+  {'7','4','1','D','A'},
+ {'q', 'h', 'o', 'y','a'}
+};
+
+
+char keys[ROW_NUM][COLUMN_NUM] = {
+  {'a','b','c','d','e'},
+  {'f','g','i','j','k'},
+  {'l','m','n','o','p'},
+  {'q', 'r', 's', 't','u'},
+  {'v','w','x','y','z'},
+ {'1', '2', '3', '4','5'}
+};
+*/
+
+char keys[ROW_NUM][COLUMN_NUM] = {
+  {'0','5','2','8','B','{'},
+  {'.','6','3','9','C','}'},
+  {'l','D','n','^','p','['},
+  {'q','*','E','F','u',']'},
+  {'v','4','1','7','A','/'},
+  {'!','@','#','$','%','?'}
+};
+
+
+/*
+char keys[ROW_NUM][COLUMN_NUM] = {
+  {'a','b'},
+  {'c','d'}
+};
+*/
+
+
+byte pin_rows[ROW_NUM] =  {14,12,26,13,27,25}; //{12,13,14,25,26,27};
+byte pin_column[COLUMN_NUM] = {2,32,15,33,23,5}; //{2,4,5,15,32,33};
+
+//byte pin_rows[ROW_NUM] =  {2,32};
+//byte pin_column[COLUMN_NUM] ={12,14};
+String ABC;
+uint8_t signal;
+bool connected = false;
+SIM800L* sim800l;
+Keypad keypad = Keypad( makeKeymap(keys), pin_rows, pin_column, ROW_NUM, COLUMN_NUM );
+LiquidCrystal_PCF8574 lcd(0x27);
+Preferences preferences;
+TaskHandle_t Task1;
+TaskHandle_t Task2;
+TaskHandle_t Task3;
+String ssid;
+String password;
+//String ssidp[3][3] = {};
+int tr = 0;
+byte error, address;
+int devicecount;
+String Sync, DispScor;
+//String ServAddr= "http://79.104.192.118:8080";
+String ServAddr= "http://192.168.88.45";
+String iddev ="1";
+int approve = 0;
+String memeber_id, post_json, bipm,namem, temp1,oneline, currentbip;
+int chcom = 2;
+
+//print to lcd
+int printdisp (String p){
+  lcd.setCursor(0, tr); 
+  lcd.print(p);
+  if (tr == 0){
+    tr = 1;
+  } else if (tr == 1){
+    tr = 0;
+  }
+ return 1;         
+}
+
+void feedthedog () {
+      TIMERG0.wdt_wprotect = TIMG_WDT_WKEY_VALUE;
+      TIMERG0.wdt_feed = 1;
+      TIMERG0.wdt_wprotect = 0;
+}
+//wifi connect function
+//if (preferences.getString("ssid1name", "")){WFConnect (preferences.getString("ssid1name", ""),preferences.getString("ssid1pass", ""));}
+//
+int WFConnect (String s, String p){
+   while (WiFi.status() != WL_CONNECTED) {
+    for (int i = 0; i <= 5; i++) {
+      Serial.println("Соединяемся с Wi-Fi");
+      //printdisp ("connecting wifi_"+(String)i);
+      String ss = "ssid"+String(i,DEC)+"name";
+     // if (preferences.getString(ss, "")){ s = preferences.getString(ss, "");}
+      //String sp = "ssid"+(String)i+"pass";
+      //if (preferences.getString(sp, "")){ p = preferences.getString(sp, "");}  
+      //s = preferences.getString("ssid"+String(i)+"name", ""); 
+      //p = preferences.getString("ssid"+String(i)+"pass", "");
+      WiFi.begin(s.c_str(), p.c_str());
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("Соединение с Wi-Fi установлено");
+        printdisp ("conected wifi!");
+        return 1;
+        break;
+      }
+    }
+   }
+  return 0;
+}
+  /*
+  WiFi.begin(s.c_str(), p.c_str());
+   while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Соединяемся с Wi-Fi..");
+    printdisp ("connecting wifi..");
+  }
+  Serial.println("Соединение с Wi-Fi установлено");
+  printdisp ("conected wifi!");
+  */
+
+//GPRS Connect
+int GPRSConnect (String apn){
+  //Wire.begin();
+    // Wait until the module is ready to accept AT commands
+    sim800l->reset();
+    delay (1000);
+  while(!sim800l->isReady()) {
+    Serial.println(F("Problem to initialize AT command, retry in 1 sec"));
+    //printdisp ("Problem AT ");
+    //printdisp ("Not conn modem");
+    delay(1000);
+  }
+  Serial.println(F("Setup Complete!"));
+  //printdisp ("Setup Complete!");
+
+  // Wait for the GSM signal
+  uint8_t signal = sim800l->getSignal();
+  while(signal <= 0 ) {
+    delay(1000);
+    Serial.print("signal-");
+    Serial.print(signal);
+    //printdisp ("Signal OK - "+signal);
+    signal = sim800l->getSignal();
+  }
+ // printdisp ("Signal OK - "+signal);
+  Serial.print(F("Signal OK (strenght: "));
+  Serial.print(signal);
+  Serial.println(F(")"));
+  delay(1000);
+
+  // Wait for operator network registration (national or roaming network)
+  NetworkRegistration network = sim800l->getRegistrationStatus();
+  while(network != REGISTERED_HOME && network != REGISTERED_ROAMING) {
+    delay(1000);
+    network = sim800l->getRegistrationStatus();
+  }
+  Serial.println(F("Network registration OK"));
+  //printdisp ("Registration - OK");
+  delay(1000);
+
+  // Setup APN for GPRS configuration
+  bool success = sim800l->setupGPRS(APN);
+  while(!success) {
+    success = sim800l->setupGPRS(APN);
+    delay(5000);
+  }
+  Serial.println(F("GPRS config OK"));
+  //printdisp ("GPRS config OK");
+  connected = sim800l->connectGPRS();
+  if(connected) {
+    Serial.print(F("GPRS connected with IP "));
+    //printdisp ("GPRS connected ");
+    Serial.println(sim800l->getIP());
+    //printdisp (sim800l->getIP());
+    //return 1;
+    } 
+  else {
+    Serial.println(F("GPRS not connected !"));
+    //printdisp ("GPRS not connected !");
+    Serial.println(F("Reset the module."));
+    //printdisp ("Reset the module.");
+    //sim800l->reset();
+    GPRSConnect (apn);
+     //return 0; 
+    }
+return 1;    
+}
+
+
+
+//approve function 
+int f_approve (){
+  if (approve == 1) {
+    approve=0;
+    DispScor="";
+    }
+ return 1;
+}
+//ABC function
+
+//key to disp and send to http
+int DispScorT (String d){
+     f_approve();
+         if (DispScor.length() < 6) {
+                    if (d == "1"){
+                     DispScor=DispScor+'1';
+                     Sync ="";   }
+                  else if (d == "2"){
+                     DispScor=DispScor+'2';
+                     Sync ="";}
+                  else if (d == "3"){
+                     DispScor=DispScor+'3';
+                     Sync ="";}
+                  else if (d == "4"){
+                     DispScor=DispScor+'4';
+                     Sync ="";}
+                  else if (d == "5"){
+                     DispScor=DispScor+'5';
+                     Sync ="";}
+                  else if (d == "6"){
+                     DispScor=DispScor+'6';
+                     Sync ="";}
+                  else if (d == "7"){
+                     DispScor=DispScor+'7';
+                     Sync ="";}
+                  else if (d == "8"){
+                     DispScor=DispScor+'8';
+                     Sync ="";}
+                  else if (d == "9"){
+                     DispScor=DispScor+'9';
+                     Sync ="";}
+                  else if (d == "0"){
+                     DispScor=DispScor+'0';
+                     Sync ="";}
+                  else if (d == "A"){
+                     ABC="A";
+                     Sync ="";} 
+                  else if (d == "B"){
+                     ABC="B";
+                     Sync ="";}
+                  else if (d == "C"){
+                     ABC="C";
+                     Sync ="";}          
+                  else  if (d == "E"){
+                     Sync ="";
+                     post_json = "{\"temp2\":\""+ABC+"\",\"temp1\":\""+temp1+"\",\"bip\":\""+bipm+"\",\"id_judge\":\""+iddev+"\",\"id_member\":\""+memeber_id+"\",\"scor\":\""+DispScor+"\",\"status\":\"1\"}";
+                     DispScor=DispScor+" OK";
+                     approve =1;
+                          if (chcom==1){
+                             if(WiFi.status()== WL_CONNECTED){
+                                  WiFiClient client;
+                                  HTTPClient http;
+                                  http.begin(client, ServAddr+"/scs");
+                                  http.addHeader("Content-Type", "application/json");
+                                  int httpResponseCode = http.POST(post_json);
+                                  Serial.print("HTTP Response code: ");
+                                  Serial.println(httpResponseCode);
+                                  http.end();
+                                }
+                                else {
+                                  printdisp ("Error HTTP request");
+                                }
+                          }
+                          if (chcom==2){
+                        
+                          }                               
+                  }
+                  else if (d == "D"){
+                     DispScor="";
+                     ABC=" ";
+                     Sync ="";}
+                  else if (d == "."){
+                     DispScor=DispScor+'.';
+                     Sync ="";}
+                  else {}
+     }else{DispScor="";} 
+return 1;
+}
+
+//firmware update setting
+//x = 1 read; x = 0 write; x = 9988 clear;
+int firmware (int x) {
+  if (x ==0) {
+    while(true){
+               if (Serial.available() > 0) {
+                  String incomingString = Serial.readString();
+                  DynamicJsonDocument doc(1024);
+                  deserializeJson(doc, incomingString);
+                  preferences.begin("credentials", false);   
+                  //ssid
+                  //preferences.remove("ssid1name");
+                  ssid = preferences.putString("ssid1name", (const char*) doc["ssid1name"]); 
+                  password = preferences.putString("ssid1pass", (const char*) doc["ssid1pass"]);
+                  ssid = preferences.putString("ssid2name", (const char*) doc["ssid2name"]); 
+                  password = preferences.putString("ssid2pass", (const char*) doc["ssid2pass"]);
+                  ssid = preferences.putString("ssid3name", (const char*) doc["ssid3name"]); 
+                  password = preferences.putString("ssid3pass", (const char*) doc["ssid3pass"]);
+                  ssid = preferences.putString("ssid4name", (const char*) doc["ssid4name"]); 
+                  password = preferences.putString("ssid4pass", (const char*) doc["ssid4pass"]);
+                  ssid = preferences.putString("ssid5name", (const char*) doc["ssid5name"]); 
+                  password = preferences.putString("ssid15ass", (const char*) doc["ssid5pass"]);
+                  //gsm
+                  ssid = preferences.putString("apnname", (const char*) doc["apnname"]); 
+                  password = preferences.putString("apnuser", (const char*) doc["apnuser"]);
+                  password = preferences.putString("apnpass", (const char*) doc["apnpass"]);
+                  //rest
+                  password = preferences.putString("serveraddr", (const char*) doc["serveraddr"]);
+                  //rest
+                  password = preferences.putString("chcom", (const char*) doc["chcom"]);
+                  password = preferences.putString("monitoring", (const char*) doc["monitoring"]);
+                  preferences.end();
+                  return x;
+                  break; 
+               }
+    }
+  
+  } else if (x==1) {
+      preferences.begin("credentials", false);
+      DynamicJsonDocument doc(1024);
+      //ssid
+      doc["ssid1name"] = preferences.getString("ssid1name", "");
+      doc["ssid1pass"] = preferences.getString("ssid1pass", "");
+      doc["ssid2name"] = preferences.getString("ssid2name", "");
+      doc["ssid2pass"] = preferences.getString("ssid2pass", "");
+      doc["ssid3name"] = preferences.getString("ssid3name", "");
+      doc["ssid3pass"] = preferences.getString("ssid3pass", "");
+      doc["ssid4name"] = preferences.getString("ssid4name", "");
+      doc["ssid4pass"] = preferences.getString("ssid4pass", "");
+      doc["ssid5name"] = preferences.getString("ssid5name", "");
+      doc["ssid5pass"] = preferences.getString("ssid5pass", "");
+      //gsm
+      doc["apnname"] = preferences.getString("apnname", "");
+      doc["apnuser"] = preferences.getString("apnuser", "");
+      doc["apnpass"] = preferences.getString("apnpass", "");
+      //rest
+      doc["serveraddr"] = preferences.getString("serveraddr", "");
+      //system
+      doc["chcom"] = preferences.getString("chcom", "");
+      doc["monitoring"] = preferences.getString("monitoring", "");
+      serializeJson(doc, Serial);
+      preferences.end();
+      return x;
+  } else if (x==9988) {
+      preferences.begin("credentials", false);
+      preferences.clear();
+      preferences.end();
+      return x;
+  }  else {
+      return x;  
+  }
+}
+
+
+int status (int x){
+  if (x == 0) {
+          while(true){
+          //wifi
+          Serial.print("IP:");
+          Serial.println(WiFi.localIP());  
+          Serial.print("MAC:");
+          Serial.println(WiFi.macAddress());
+          long rssi = WiFi.RSSI();
+          Serial.print("RSSI dbm:");
+          Serial.println(rssi);
+          Serial.print("RSSI %:");
+          rssi = 2*(rssi+100);
+          Serial.println(rssi);
+          wifi_power_t tx_power;
+          Serial.print("TxPower:");
+          tx_power=WiFi.getTxPower();
+          Serial.println(tx_power);
+          byte mac[6];
+          WiFi.macAddress(mac);
+          String uniq =  String(mac[0],HEX) +String(mac[1],HEX) +String(mac[2],HEX) +String(mac[3],HEX) + String(mac[4],HEX) + String(mac[5],HEX);
+          Serial.print("uniq:");
+          Serial.println(uniq);
+          delay (1000);
+          if (Serial.available()) {char ser = Serial.read(); if (ser  == '0'){break;}} 
+          }
+   } else if (x == 1 ){
+          while(true){
+          //GSM
+          if(!connected) {
+              GPRSConnect(APN);
+          }
+          Serial.print("GSM:");
+          Serial.print("Signal level: ");
+          Serial.println(sim800l->getSignal());
+          Serial.print("PowerMode: ");
+          Serial.println(sim800l->getPowerMode());
+          Serial.print("Version: ");
+          Serial.println(sim800l->getVersion());
+          Serial.print("Firmware: ");
+          Serial.println(sim800l->getFirmware());
+          Serial.print("SimCardNumber: ");
+          Serial.println(sim800l->getSimCardNumber());
+          Serial.print("SimStatus: ");
+          Serial.println(sim800l->getSimStatus());
+          Serial.print("RegistrationStatus: ");
+          Serial.println(sim800l->getRegistrationStatus());
+          byte mac[6];
+          WiFi.macAddress(mac);
+          String uniq =  String(mac[0],HEX) +String(mac[1],HEX) +String(mac[2],HEX) +String(mac[3],HEX) + String(mac[4],HEX) + String(mac[5],HEX);
+          Serial.print("uniq:");
+          Serial.println(uniq);
+          delay (1000);
+          if (Serial.available()) {char ser = Serial.read(); if (ser  == '0'){break;}} 
+          }
+   }
+    return x;
+}
+
+
+void Task2code( void * parameter) {
+   
+          
+  for(;;) {
+     StaticJsonDocument<2000> doc; 
+  if ((WiFi.status() == WL_CONNECTED)) {
+    HTTPClient http;
+    http.begin(ServAddr+"/ags");
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
+        DeserializationError error = deserializeJson(doc, payload);
+  if (error) {
+    Serial.print(F("deserializeJson() failed: "));
+    Serial.println(error.f_str());
+    return;
+  }
+      const char* name  = doc["short_name"];
+      const char* bip  = doc["bip"];
+       String mid = doc["id"];
+       String tempp = doc["temp1"];
+       temp1= tempp;
+      memeber_id  = mid;  
+      bipm=String(bip);
+     oneline = String(bip)+" "+String(name);
+
+    }
+    else {
+      printdisp ("Error HTTP-request");
+      WFConnect("MikroTik-CEDA03","lexroot1");
+    //добавить новую функцию с перебором точек доступа
+    }
+    http.end();
+  }
+   
+  }
+}
+
+
+
+void Task1code( void * parameter) {
+  for(;;) {
+       feedthedog();
+       lcd.clear();
+       lcd.setCursor(0, 0);
+       lcd.print(oneline);
+       lcd.setCursor(0, 1);
+       lcd.print(iddev+"\xFF""\xFF""\xFF"" "+DispScor); 
+       lcd.setCursor(12, 1);
+       lcd.print("\xFF""\x5F"+ABC);
+       lcd.setCursor(15, 1);
+       lcd.print("\x5F");
+       vTaskDelay( 200 / portTICK_PERIOD_MS); 
+  }
+  vTaskDelete( NULL );
+}
+
+void Task3code( void * parameter) {
+  feedthedog();
+   //VTaskDelay(NULL);
+  for(;;) {
+    ///delay (5);
+      char key = keypad.getKey();
+
+  if (key) {
+    Serial.println(key);
+    DispScorT (String(key));
+  }
+    vTaskDelay( 50 / portTICK_PERIOD_MS); 
+  }
+   vTaskDelete( NULL );
+}
+
+void setup() {
+  //for rest only debug, remove or change to #define ifelse
+  char key = keypad.getKey();
+  if (key) {
+      firmware (9988);
+  }
+  Serial.begin(115200);
+  
+  //Preferens for cred init
+  preferences.begin("credentials", false);
+  //add base env for pref to var example : server, gswm or wifi, budrate serial2, monitoring online(push metric (voltage signal an temperature ) to server over rest )
+  //if (preferences.getString("chcom", "")){chcom = preferences.getString("chcom", "");}
+    
+  //Display init
+  Wire.begin();
+  Wire.beginTransmission(0x27);
+  //error = Wire.endTransmission();
+  Serial.print("Error: ");
+  Serial.print(error);
+  lcd.begin(16, 2);
+  lcd.setBacklight(5000);
+  lcd.home();
+  //gprs init hw connect
+  //Serial2.begin(57600);
+  delay(1000);
+  //I2C Diagnostic
+  devicecount = 0; 
+  /*
+  for (address = 1; address < 127; address++ )
+  {
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+    if (error == 0)
+    {
+      Serial.print("I2C device found at address 0x");
+      printdisp ("Scanning...");
+      if (address < 16)
+          Serial.print("0");
+          printdisp ("0");
+          Serial.print(address, HEX);
+          Serial.println("  !");
+          devicecount++;
+    }
+    else if (error == 4)
+    {
+      Serial.print("Unknown error at address 0x");
+      if (address < 16)
+        Serial.print("0");
+        Serial.println(address, HEX);
+    }
+  }
+  if (devicecount == 0){
+    Serial.println("No I2C devices found\n");
+    printdisp ("No I2C devices found\n");
+  }
+  else{
+    Serial.println("done\n"); 
+  }  
+  */
+  delay(2000);
+  WiFi.mode(WIFI_STA);
+
+  //Task Display init
+  xTaskCreatePinnedToCore(
+        Task1code, /* Function to implement the task */
+        "Task1", /* Name of the task */
+        10000,  /* Stack size in words */
+        NULL,  /* Task input parameter */
+        5,  /* Priority of the task */
+        &Task1,  /* Task handle. */
+        1); /* Core where the task should run */
+
+  //Task REST init
+  xTaskCreatePinnedToCore(
+        Task2code, /* Function to implement the task */
+        "Task2", /* Name of the task */
+        20000,  /* Stack size in words */
+        NULL,  /* Task input parameter */
+        5,  /* Priority of the task */
+        &Task2,  /* Task handle. */
+        1); /* Core where the task should run */  
+    //Task keyboard
+  xTaskCreatePinnedToCore(
+        Task3code, /* Function to implement the task */
+        "Task3", /* Name of the task */
+        10000,  /* Stack size in words */
+        NULL,  /* Task input parameter */
+        5,  /* Priority of the task */
+        &Task3,  /* Task handle. */
+        1); /* Core where the task should run */        
+  }
+
+  
+
+void loop() {
+
+
+  if (Serial.available()) {
+    char ser = Serial.read();
+    switch(ser){ 
+      case '1':  firmware (0);; break;
+      case '2':  firmware (1); break;
+      case '3':  firmware (9988); break;
+      case '4':  status (0); break;
+      case '5':  status (1); break;
+    }
+  }
+  
+ ///22 delay(2000);
+    
+}
